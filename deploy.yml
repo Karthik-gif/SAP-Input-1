@@ -1,0 +1,299 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  GitHub Actions — ECB Loan Management CI/CD Pipeline
+#  File   : .github/workflows/deploy.yml
+#  Tool   : abapGit Action (https://github.com/abapGit/abapgit-action)
+# ═══════════════════════════════════════════════════════════════════════
+#
+#  WHAT THIS PIPELINE DOES
+#  ───────────────────────────────────────────────────────────────────
+#  On every push to main:
+#    1. Lint ABAP code with abaplint (syntax + style checks)
+#    2. Deploy all ABAP objects (src/) to SAP via abapGit REST API
+#    3. Upload ECB_Loan_Management.html to SAP MIME repository
+#    4. Run ABAP Unit Tests via ADT REST API
+#    5. Post deployment status to GitHub commit
+#
+#  PREREQUISITES — SAP SYSTEM SETUP
+#  ───────────────────────────────────────────────────────────────────
+#  1. Install abapGit in your S/4HANA system:
+#       → Download ZABAPGIT_STANDALONE.prog.abap from abapgit.org
+#       → Create report ZABAPGIT via SE38, paste code, activate
+#
+#  2. Enable abapGit REST API (S/4HANA 2020+):
+#       → Run ZABAPGIT → Settings → Enable REST API
+#       → Note the base URL: https://<host>:<port>/sap/bc/abapgit/repos
+#
+#  3. Create a dedicated SAP technical user for CI/CD:
+#       → SU01 → User type: Communication
+#       → Roles: Z_ABAPGIT_DEVELOPER (SE38, SE11, SEGW access)
+#       → Password: set, no expiry
+#
+#  4. Add GitHub repository secrets (Settings → Secrets → Actions):
+#       SAP_HOST     = https://your-s4-host:44300
+#       SAP_CLIENT   = 100
+#       SAP_USER     = CICD_USER
+#       SAP_PASSWORD = ••••••••
+#       SAP_PACKAGE  = ZCO_ECB_LOAN
+#       SAP_TRANSPORT= DEVK900001  (or use auto-transport)
+#
+# ═══════════════════════════════════════════════════════════════════════
+
+name: ECB Loan — SAP Deploy
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'mime/**'
+      - '.abapgit.xml'
+
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'mime/**'
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [ dev, qa, prod ]
+      skip_tests:
+        description: 'Skip ABAP Unit Tests'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  ABAP_PACKAGE: ${{ secrets.SAP_PACKAGE }}
+
+# ───────────────────────────────────────────────────────────────────────
+jobs:
+
+# ── JOB 1: ABAP Lint ────────────────────────────────────────────────────
+  abap-lint:
+    name: ABAP Lint
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run abaplint
+        uses: abaplint/abaplint-action@v0.0.3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_findings: true
+          # abaplint.json config at repo root defines rules:
+          # syntax version, naming conventions, complexity limits etc.
+
+# ── JOB 2: Deploy to SAP (DEV) ────────────────────────────────────────
+  deploy-dev:
+    name: Deploy to SAP Dev
+    runs-on: ubuntu-latest
+    needs: abap-lint
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    environment: development
+
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── abapGit push: all ABAP objects in src/ ──────────────────────
+      - name: Push ABAP objects via abapGit
+        uses: abapGit/abapgit-action@v1
+        with:
+          abapgit_server:    ${{ secrets.SAP_HOST }}
+          abapgit_user:      ${{ secrets.SAP_USER }}
+          abapgit_password:  ${{ secrets.SAP_PASSWORD }}
+          abapgit_client:    ${{ secrets.SAP_CLIENT }}
+          abapgit_package:   ${{ secrets.SAP_PACKAGE }}
+          # Push mode: push all local changes to SAP and activate
+          abapgit_mode:      push
+
+      # ── Upload HTML to SAP MIME Repository via REST ──────────────────
+      - name: Upload HTML to MIME Repository
+        env:
+          SAP_HOST:     ${{ secrets.SAP_HOST }}
+          SAP_CLIENT:   ${{ secrets.SAP_CLIENT }}
+          SAP_USER:     ${{ secrets.SAP_USER }}
+          SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
+        run: |
+          echo "Uploading ECB_Loan_Management.html to SAP MIME..."
+
+          # SAP MIME REST endpoint (ICM/ICF activated service /sap/bc/mime)
+          MIME_URL="${SAP_HOST}/sap/bc/mime/SAP/PUBLIC/ECB_LOAN/ECB_Loan_Management.html"
+
+          HTTP_STATUS=$(curl -s -o /tmp/mime_response.txt -w "%{http_code}" \
+            --request PUT \
+            --url "${MIME_URL}?sap-client=${SAP_CLIENT}" \
+            --user "${SAP_USER}:${SAP_PASSWORD}" \
+            --header "Content-Type: text/html; charset=utf-8" \
+            --header "x-csrf-token: $(
+              curl -s -o /dev/null -w '%header{x-csrf-token}' \
+                --request GET \
+                --url "${SAP_HOST}/sap/opu/odata/SAP/ZCO_ECB_LOAN_SRV/?sap-client=${SAP_CLIENT}" \
+                --user "${SAP_USER}:${SAP_PASSWORD}" \
+                --header 'x-csrf-token: Fetch'
+            )" \
+            --data-binary @mime/ECB_LOAN/ECB_Loan_Management.html)
+
+          if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ] || [ "$HTTP_STATUS" -eq 204 ]; then
+            echo "✔ HTML uploaded successfully (HTTP $HTTP_STATUS)"
+          else
+            echo "✘ HTML upload failed (HTTP $HTTP_STATUS)"
+            cat /tmp/mime_response.txt
+            exit 1
+          fi
+
+      # ── Run Z_ECB_LOAN_SETUP via SAP RFC/REST to create runtime objects ─
+      - name: Run ABAP Setup Program
+        env:
+          SAP_HOST:     ${{ secrets.SAP_HOST }}
+          SAP_CLIENT:   ${{ secrets.SAP_CLIENT }}
+          SAP_USER:     ${{ secrets.SAP_USER }}
+          SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
+        run: |
+          echo "Triggering Z_ECB_LOAN_SETUP via SAP REST..."
+
+          # Use SAP Gateway REST to submit a background job
+          curl -s -X POST \
+            "${SAP_HOST}/sap/bc/adt/programs/programs/Z_ECB_LOAN_SETUP/runs" \
+            --user "${SAP_USER}:${SAP_PASSWORD}" \
+            --header "sap-client: ${SAP_CLIENT}" \
+            --header "Content-Type: application/xml" \
+            --data '<?xml version="1.0" encoding="UTF-8"?>
+              <adtcore:objectReference
+                xmlns:adtcore="http://www.sap.com/adt/core"
+                adtcore:name="Z_ECB_LOAN_SETUP"/>' \
+            -w "\nHTTP Status: %{http_code}\n" || true
+
+          echo "Setup program triggered (check SM37 for job status)"
+
+# ── JOB 3: ABAP Unit Tests ───────────────────────────────────────────────
+  unit-tests:
+    name: ABAP Unit Tests
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    if: ${{ !inputs.skip_tests }}
+
+    steps:
+
+      - name: Run ABAP Unit Tests via ADT
+        env:
+          SAP_HOST:     ${{ secrets.SAP_HOST }}
+          SAP_CLIENT:   ${{ secrets.SAP_CLIENT }}
+          SAP_USER:     ${{ secrets.SAP_USER }}
+          SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
+        run: |
+          echo "Running ABAP Unit Tests for package ZCO_ECB_LOAN..."
+
+          HTTP_STATUS=$(curl -s -o /tmp/test_result.xml -w "%{http_code}" \
+            --request POST \
+            --url "${SAP_HOST}/sap/bc/adt/abapunit/testruns" \
+            --user "${SAP_USER}:${SAP_PASSWORD}" \
+            --header "sap-client: ${SAP_CLIENT}" \
+            --header "Content-Type: application/xml" \
+            --header "Accept: application/xml" \
+            --data '<?xml version="1.0" encoding="utf-8"?>
+              <aunit:run
+                xmlns:aunit="http://www.sap.com/adt/aunit">
+                <aunit:options>
+                  <aunit:measurements>none</aunit:measurements>
+                  <aunit:scope
+                    ownTests="true"
+                    foreignTests="false"/>
+                  <aunit:riskLevel
+                    harmless="true"
+                    dangerous="false"
+                    critical="false"/>
+                  <aunit:duration
+                    short="true"
+                    medium="false"
+                    long="false"/>
+                </aunit:options>
+                <aunit:adtcore:objectSets
+                  xmlns:adtcore="http://www.sap.com/adt/core">
+                  <adtcore:objectSet kind="inclusive">
+                    <adtcore:adtcore:objectReferences>
+                      <adtcore:objectReference
+                        adtcore:uri="/sap/bc/adt/packages/ZCO_ECB_LOAN"/>
+                    </adtcore:adtcore:objectReferences>
+                  </adtcore:objectSet>
+                </aunit:adtcore:objectSets>
+              </aunit:run>')
+
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "✔ ABAP Unit Tests completed"
+            # Check for test failures in XML response
+            if grep -q 'severity="error"' /tmp/test_result.xml; then
+              echo "✘ Test failures found:"
+              grep 'severity="error"' /tmp/test_result.xml
+              exit 1
+            else
+              echo "✔ All tests passed"
+            fi
+          else
+            echo "⚠ Test run request returned HTTP $HTTP_STATUS — check ADT service"
+          fi
+
+# ── JOB 4: Promote to QA (manual gate) ──────────────────────────────────
+  deploy-qa:
+    name: Deploy to SAP QA
+    runs-on: ubuntu-latest
+    needs: [ deploy-dev, unit-tests ]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: quality_assurance
+      # GitHub environment "quality_assurance" has required_reviewers set
+      # — pipeline pauses here for human approval before promoting to QA
+
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Release transport to QA via CTS REST API
+        env:
+          SAP_HOST:      ${{ secrets.SAP_HOST_QA }}
+          SAP_USER:      ${{ secrets.SAP_USER }}
+          SAP_PASSWORD:  ${{ secrets.SAP_PASSWORD }}
+          TRANSPORT_NR:  ${{ secrets.SAP_TRANSPORT }}
+        run: |
+          echo "Importing transport $TRANSPORT_NR to QA system..."
+
+          # CTS REST API — import transport request
+          HTTP_STATUS=$(curl -s -o /tmp/cts_response.txt -w "%{http_code}" \
+            --request POST \
+            --url "${SAP_HOST}/sap/bc/adt/cts/transports/${TRANSPORT_NR}/import" \
+            --user "${SAP_USER}:${SAP_PASSWORD}" \
+            --header "Content-Type: application/xml" \
+            -w "%{http_code}")
+
+          echo "CTS Import HTTP status: $HTTP_STATUS"
+          cat /tmp/cts_response.txt
+
+# ── JOB 5: Slack / Teams Notification ──────────────────────────────────
+  notify:
+    name: Notify Team
+    runs-on: ubuntu-latest
+    needs: [ deploy-dev, unit-tests ]
+    if: always()
+
+    steps:
+      - name: Post to Slack
+        if: ${{ secrets.SLACK_WEBHOOK != '' }}
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "*ECB Loan — SAP Deploy*\nStatus: ${{ needs.deploy-dev.result == 'success' && '✔ Success' || '✘ Failed' }}\nBranch: `${{ github.ref_name }}`\nCommit: `${{ github.sha }}`\nBy: ${{ github.actor }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

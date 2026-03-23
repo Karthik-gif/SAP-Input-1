@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  abapGit Project Manifest — ECB Loan Management
+  ═══════════════════════════════════════════════════════════════════════
+  Tool    : abapGit (https://abapgit.org)
+  Install : Run program ZABAPGIT or /NAGIT/REPO_ADMIN in your SAP system
+  Version : 1.0.0
+
+  WORKFLOW
+  ─────────────────────────────────────────────────────────────────────
+  Push (SAP → Git):
+    abapGit → Online repos → Select ZCO_ECB_LOAN → Push
+
+  Pull (Git → SAP):
+    abapGit → Online repos → Clone → Enter GitHub URL → Pull
+    All ABAP objects in src/ are created/updated in the SAP package.
+
+  CI/CD:
+    See .github/workflows/deploy.yml for automated GitHub Actions pipeline
+    using abapgit-action to auto-deploy on push to main branch.
+
+  REPOSITORY STRUCTURE
+  ─────────────────────────────────────────────────────────────────────
+  .abapgit.xml                         ← this file (project manifest)
+  src/
+    ZCO_ECB_LOAN/                      ← ABAP package objects
+      package.devc.xml                 ← package definition
+      ZECB_LOAN_HDR.tabl.xml           ← DB table (transparent)
+      ZECB_FACILITY.tabl.xml           ← Facility master table
+      ZTECB_PROD_TYPE.tabl.xml         ← Product type customising
+      ZTECB_TXN_TYPE.tabl.xml          ← Transaction type customising
+      ZST_ECB_LOAN.stru.xml            ← Structure: Loan entity
+      ZST_ECB_FACILITY.stru.xml        ← Structure: Facility entity
+      ZST_PRODUCT_TYPE.stru.xml        ← Structure: Product type
+      ZST_TXN_TYPE.stru.xml            ← Structure: Transaction type
+      ZTT_ECB_LOAN.ttyp.xml            ← Table type of ZST_ECB_LOAN
+      ZCO_ECB_LOAN.msag.xml            ← Message class (30 messages)
+      ZCO_LOAN.nrob.xml                ← Number range object
+      ZCL_ECB_LOAN_MPC.clas.xml        ← OData MPC base (SEGW-generated)
+      ZCL_ECB_LOAN_MPC.clas.abap
+      ZCL_ECB_LOAN_MPC_EXT.clas.xml    ← OData MPC extension
+      ZCL_ECB_LOAN_MPC_EXT.clas.abap
+      ZCL_ECB_LOAN_DPC.clas.xml        ← OData DPC base (SEGW-generated)
+      ZCL_ECB_LOAN_DPC.clas.abap
+      ZCL_ECB_LOAN_DPC_EXT.clas.xml    ← OData DPC extension (our logic)
+      ZCL_ECB_LOAN_DPC_EXT.clas.abap
+      Z_ECB_LOAN_VIEWER.prog.xml       ← ABAP report: HTML Viewer launcher
+      Z_ECB_LOAN_VIEWER.prog.abap
+      Z_ECB_LOAN_SETUP.prog.xml        ← ABAP report: one-click installer
+      Z_ECB_LOAN_SETUP.prog.abap
+  mime/
+    ECB_LOAN/
+      ECB_Loan_Management.html         ← HTML UI (MIME repository object)
+  docs/
+    SETUP.md
+    API.md
+-->
+<asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
+  <asx:values>
+    <DATA>
+      <!-- ── Project identity ─────────────────────────────────────── -->
+      <MASTER_LANGUAGE>E</MASTER_LANGUAGE>
+      <STARTING_FOLDER>/src/ZCO_ECB_LOAN/</STARTING_FOLDER>
+      <FOLDER_LOGIC>FLAT</FOLDER_LOGIC>
+
+      <!-- ── Ignored objects (auto-generated or system) ───────────── -->
+      <IGNORE>
+        <item>/src/ZCO_ECB_LOAN/ZCL_ECB_LOAN_MPC.clas.xml</item>
+        <item>/src/ZCO_ECB_LOAN/ZCL_ECB_LOAN_MPC.clas.abap</item>
+        <item>/src/ZCO_ECB_LOAN/ZCL_ECB_LOAN_DPC.clas.xml</item>
+        <item>/src/ZCO_ECB_LOAN/ZCL_ECB_LOAN_DPC.clas.abap</item>
+      </IGNORE>
+
+      <!-- ── MIME objects (abapGit mime support) ───────────────────── -->
+      <REQUIREMENTS>
+        <item>
+          <COMPONENT>SAP_BASIS</COMPONENT>
+          <RELEASE>752</RELEASE>
+          <PATCH>0</PATCH>
+        </item>
+      </REQUIREMENTS>
+    </DATA>
+  </asx:values>
+</asx:abap>
